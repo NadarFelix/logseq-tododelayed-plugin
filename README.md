@@ -9,6 +9,9 @@ A Logseq plugin that adds a start date to a block. The block stays without a tas
 3. Pick a start date in the date picker. It must be later than today.
 4. Confirm. The property `todostart:: YYYY-MM-DD` is added to the block.
 
+   <img width="1063" height="259" alt="image" src="https://github.com/user-attachments/assets/1da25071-0f6d-4c14-9424-669b63278cd7" />
+
+
 You can also add the property manually:
 
 ```text
