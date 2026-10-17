@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <script src="https://cdn.jsdelivr.net/npm/@logseq/libs@latest"></script>
+    <style>
+        html, body { margin: 0; background: transparent; }
+        #dt-overlay {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.3);
+            font-family: sans-serif;
+        }
+        #dt-panel {
+            background: #fff;
+            color: #000;
+            padding: 16px;
+            border-radius: 8px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+        }
+        #dt-panel label { display: block; font-weight: bold; }
+        #dt-panel input, #dt-panel button {
+            display: block;
+            margin-top: 8px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div id="dt-overlay">
+        <div id="dt-panel">
+            <label for="dt-date">Date de début du TODO delayed</label>
+            <input type="date" id="dt-date">
+            <button id="dt-ok">Créer</button>
+            <button id="dt-cancel">Annuler</button>
+        </div>
+    </div>
+
+    <script>
+        const PROPERTY_KEY = 'todostart';
+        const CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 heure
+        const DATE_RE = /\d{4}-\d{2}-\d{2}/;
+        const MARKER_RE = /^(TODO|DOING|DONE|NOW|LATER)\s/;
+        const LOG = '[TODO-delayed]';
+
+        let pendingBlockUuid = null;
+        let running = false;
+
+        function pad(n) { return String(n).padStart(2, '0'); }
+
+        // Date locale au format AAAA-MM-JJ
+        function todayISO() {
+            const d = new Date();
+            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+        }
+
+        function extractStartDate(block) {
+            const fromProps = block.properties ? block.properties[PROPERTY_KEY] : null;
+            if (fromProps != null) {
+                const m = String(fromProps).match(DATE_RE);
+                if (m) return m[0];
+            }
+            const re = new RegExp(PROPERTY_KEY + ':: *(\\d{4}-\\d{2}-\\d{2})', 'i');
+            const m2 = (block.content || '').match(re);
+            return m2 ? m2[1] : null;
+        }
+
+        async function activateDelayedTodos() {
+            if (running) return;
+            running = true;
+            try {
+                const today = todayISO();
+                const rows = await logseq.DB.datascriptQuery(`
+                    [:find ?b
+                     :where
+                     [?b :block/properties ?p]
+                     [(get ?p :${PROPERTY_KEY})]]
+                `);
+
+                if (!Array.isArray(rows)) {
+                    console.log(LOG, 'Résultat de requête inattendu:', rows);
+                    return;
+                }
+                console.log(LOG, `${rows.length} bloc(s) avec ${PROPERTY_KEY}`);
+
+                for (const row of rows) {
+                    const id = Array.isArray(row) ? row[0] : row;
+                    const block = await logseq.Editor.getBlock(id);
+                    if (!block) continue;
+
+                    const start = extractStartDate(block);
+                    if (!start || start > today) continue;
+
+                    const content = (block.content || '').trim();
+                    if (MARKER_RE.test(content)) continue;
+
+                    await logseq.Editor.updateBlock(block.uuid, `TODO ${content}`);
+                    console.log(LOG, 'Converti en TODO:', block.uuid, start);
+                }
+            } catch (e) {
+                console.error(LOG, 'Erreur activation TODO delayed:', e);
+            } finally {
+                running = false;
+            }
+        }
+
+        function scheduleMidnightCheck() {
+            const now = new Date();
+            const next = new Date(now);
+            next.setHours(24, 0, 5, 0); // minuit + 5 secondes
+            setTimeout(() => {
+                activateDelayedTodos();
+                scheduleMidnightCheck();
+            }, next.getTime() - now.getTime());
+        }
+
+        function showPicker(blockUuid) {
+            pendingBlockUuid = blockUuid;
+            const input = document.getElementById('dt-date');
+            input.min = todayISO();
+            input.value = '';
+            document.getElementById('dt-overlay').style.display = 'flex';
+            logseq.showMainUI({ autoFocus: true });
+            input.focus();
+        }
+
+        function hidePicker() {
+            document.getElementById('dt-overlay').style.display = 'none';
+            logseq.hideMainUI({ restoreEditingCursor: true });
+        }
+
+        function cancelPicker() {
+            pendingBlockUuid = null;
+            hidePicker();
+        }
+
+        async function confirmPicker() {
+            const dateStr = document.getElementById('dt-date').value;
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+                await logseq.UI.showMsg('Sélectionnez une date.', 'error');
+                return;
+            }
+            if (dateStr <= todayISO()) {
+                await logseq.UI.showMsg('La date doit être postérieure à aujourd\u2019hui.', 'warning');
+                return;
+            }
+
+            const target = pendingBlockUuid;
+            pendingBlockUuid = null;
+            hidePicker();
+
+            if (!target) return;
+            await logseq.Editor.upsertBlockProperty(target, PROPERTY_KEY, dateStr);
+            await logseq.UI.showMsg(`TODO delayed enregistré pour le ${dateStr}`, 'success');
+        }
+
+        function main() {
+            console.log(LOG, 'Plugin chargé');
+
+            logseq.setMainUIInlineStyle({
+                position: 'fixed',
+                top: '0',
+                left: '0',
+                width: '100vw',
+                height: '100vh',
+                zIndex: 999
+            });
+
+            const overlay = document.getElementById('dt-overlay');
+            document.getElementById('dt-ok').addEventListener('click', confirmPicker);
+            document.getElementById('dt-cancel').addEventListener('click', cancelPicker);
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) cancelPicker();
+            });
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') cancelPicker();
+            });
+
+            logseq.Editor.registerSlashCommand('TODO-delayed', async () => {
+                const current = await logseq.Editor.getCurrentBlock();
+                if (!current) return;
+                showPicker(current.uuid);
+            });
+
+            // Contrôles: au chargement, au changement/indexation du graphe,
+            // toutes les heures et à minuit
+            activateDelayedTodos();
+            logseq.App.onCurrentGraphChanged(() => activateDelayedTodos());
+            logseq.App.onGraphAfterIndexed(() => activateDelayedTodos());
+            setInterval(activateDelayedTodos, CHECK_INTERVAL_MS);
+            scheduleMidnightCheck();
+        }
+
+        logseq.ready(main).catch(console.error);
+    </script>
+</body>
+</html>

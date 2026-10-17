@@ -1,0 +1,9 @@
+{
+  "name": "logseq-todo-delayed",
+  "version": "0.0.2",
+  "description": "TODOs that only become active on their start date",
+  "main": "index.html",
+  "logseq": {
+    "id": "logseq-todo-delayed"
+  }
+}
